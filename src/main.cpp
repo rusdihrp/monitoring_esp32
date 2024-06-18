@@ -17,6 +17,9 @@ ModbusMaster node;
 #define DEFAULT_WIFI_SSID "SSID"
 #define DEFAULT_WIFI_PASS "PASSWORD"
 
+const char rebootTags[7] = "REBOOT";
+const char mqttTags[5] = "MQTT";
+
 const char *MQTT_HOST = "103.150.190.35";
 const char *MQTT_USERNAME = "user";
 const char *MQTT_PASSWORD = "12344321";
@@ -26,13 +29,64 @@ esp_mqtt_client_handle_t mqttClient;
 
 const char *topic = "TOPIC-MQTT";
 
+bool mqttConnected = false;
+
+// reboot esp32
+void rebootEspWithReason(const char *reason) {
+    ESP_LOGE(rebootTags, "%s", reason);
+    ESP.restart();
+}
+
+boolean sendDataMqtt(const char* topicPublish, const char* dataPublish, uint16_t lenDataPublish) {
+    uint8_t sendTries = 0;
+    if (esp_mqtt_client_publish(mqttClient, topicPublish, dataPublish, lenDataPublish, 1, false) != -1) {
+        return true;
+    } else {
+        ESP_LOGI(mqttTags, "MQTT publish failed, retrying (%d/3)", sendTries);
+        for (int i = 0; i < 3; i++) {
+            if (esp_mqtt_client_publish(mqttClient, topicPublish, dataPublish, lenDataPublish, 1, false) != -1) {
+                return true;
+            } else {
+                ESP_LOGE(mqttTags, "MQTT publish failed, retrying (%d/3)");
+            }
+            sendTries++;
+            delay(1000);
+        }
+    }
+    return false;
+}
+
+void sendMqtt(char *formatMqtt, uint16_t lenFormatMqtt, char *topicMqtt) {
+    if (WiFi.status() == WL_CONNECTED && mqttConnected) {
+        if (sendDataMqtt(topicMqtt, formatMqtt, lenFormatMqtt)) {
+            // ledState.clearBlink();
+            // ledState.blink(normalPattern, 2);
+            ESP_LOGI(mqttTags, "Topic: %s", topicMqtt);
+            ESP_LOGI(mqttTags, "Data: %s", formatMqtt);
+            ESP_LOGI(mqttTags, "Data Sent SUCCESSFULLY");
+        } else {
+            // ledState.clearBlink();
+            // ledState.blink2();
+            ESP_LOGE(mqttTags, "Data Sent FAILED");
+        }
+    } else {
+        ESP_LOGE(mqttTags, "Data Sent FAILED, Store to SD Card");
+        mqttConnected = false;
+        // if (sdInitSuccess) {
+            // sdCard.store(formatMqtt, lenFormatMqtt);  // store data to sd card
+        // }
+    }
+}
+
 static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
   if (event->event_id == MQTT_EVENT_CONNECTED) {
+    mqttConnected = true;
 
     esp_mqtt_client_subscribe(mqttClient, topic, 0);
 
   } else if (event->event_id == MQTT_EVENT_DISCONNECTED) {
     ESP_LOGI("TEST", "MQTT event: %d. MQTT_EVENT_DISCONNECTED", event->event_id);
+    mqttConnected = false;
 
   } else if (event->event_id == MQTT_EVENT_SUBSCRIBED) {
     ESP_LOGI("TEST", "MQTT msgid= %d event: %d. MQTT_EVENT_SUBSCRIBED", event->msg_id, event->event_id);
@@ -49,6 +103,22 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
     ESP_LOGI("TEST", "MQTT event: %d. MQTT_EVENT_BEFORE_CONNECT", event->event_id);
   }
   return ESP_OK;
+}
+
+// reconnect to wifi
+bool reconnectToWifi() {
+    ESP_LOGI(wifiTags, "WiFi Disconnected. Trying to reconnect...");
+    uint8_t MAX_WIFI_RECONNECT_TRIES = 2;
+    for (uint8_t i = 0; i < MAX_WIFI_RECONNECT_TRIES; i++) {
+        WiFi.disconnect();
+        delay(5000);
+        WiFi.reconnect();
+        delay(5000);
+        if (WiFi.status() == WL_CONNECTED) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void pollSht30( void * pvParameters ) {
